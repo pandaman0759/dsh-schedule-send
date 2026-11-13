@@ -221,7 +221,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         load()
         if (!sessionId) return undefined
-        const refresh = setInterval(load, 15000)
+        const refresh = setInterval(load, 2000)
         const onChanged = () => {
           load()
         }
@@ -261,12 +261,13 @@ window.__ModuleLoader__.load({
       const rows = tasks.map((task) => {
         const at = Date.parse(task.scheduledAt)
         const remaining = Number.isFinite(at) ? at - now : NaN
+        const when = task.waitingTurn === true ? '本轮结束后' : formatCountdown(remaining)
         const excerpt = String(task.prompt || '').replace(/\s+/g, ' ').trim()
         return h(
           'div',
           { key: task.id, className: 'dss-row' },
           h(ClockIcon, { key: 'i' }),
-          h('span', { key: 't', className: 'dss-row-time' }, formatCountdown(remaining)),
+          h('span', { key: 't', className: 'dss-row-time' }, when),
           h('span', { key: 'p', className: 'dss-row-prompt', title: excerpt }, excerpt),
           h(
             'button',
