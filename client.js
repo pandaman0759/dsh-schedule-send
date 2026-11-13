@@ -59,9 +59,11 @@ const CSS = `
 .dss-textarea{width:100%;box-sizing:border-box;min-height:158px;resize:vertical;padding:10px;border-radius:var(--dsw-radius-md,8px);border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);font-size:13px;line-height:1.55}
 .dss-textarea:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
 .dss-params{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;padding:0 16px 12px}
-.dss-field{display:flex;flex-direction:column;gap:4px}
+.dss-field{display:flex;flex-direction:column;gap:4px;min-width:0}
 .dss-field>span{font-size:11px;color:var(--dsw-alias-label-tertiary)}
 .dss-input{width:76px;box-sizing:border-box;padding:6px 8px;border-radius:var(--dsw-radius-sm,6px);border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:12.5px;font-family:var(--dsw-font-family)}
+.dss-input[type=date]{width:auto;min-width:160px}
+.dss-input[type=time]{width:auto;min-width:120px}
 .dss-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
 .dss-hint{font-size:11.5px;color:var(--dsw-alias-label-secondary);line-height:1.5}
 .dss-chips{display:flex;gap:4px;flex-wrap:wrap}
@@ -221,7 +223,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         load()
         if (!sessionId) return undefined
-        const refresh = setInterval(load, 15000)
+        const refresh = setInterval(load, 2000)
         const onChanged = () => {
           load()
         }
@@ -261,12 +263,13 @@ window.__ModuleLoader__.load({
       const rows = tasks.map((task) => {
         const at = Date.parse(task.scheduledAt)
         const remaining = Number.isFinite(at) ? at - now : NaN
+        const when = task.waitingTurn === true ? '本轮结束后' : formatCountdown(remaining)
         const excerpt = String(task.prompt || '').replace(/\s+/g, ' ').trim()
         return h(
           'div',
           { key: task.id, className: 'dss-row' },
           h(ClockIcon, { key: 'i' }),
-          h('span', { key: 't', className: 'dss-row-time' }, formatCountdown(remaining)),
+          h('span', { key: 't', className: 'dss-row-time' }, when),
           h('span', { key: 'p', className: 'dss-row-prompt', title: excerpt }, excerpt),
           h(
             'button',
