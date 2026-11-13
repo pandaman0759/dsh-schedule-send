@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Schedule send",
+    "description": "Queue a message in this conversation for later: right after this turn, every N minutes, or at a fixed clock time repeated daily, weekly or monthly — with a countdown card above the composer."
+  }
+}

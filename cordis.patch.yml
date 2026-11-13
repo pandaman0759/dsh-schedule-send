@@ -1,0 +1,3 @@
+- insert:
+    - id: schedule-send
+      name: '@local/dsh-schedule-send'
