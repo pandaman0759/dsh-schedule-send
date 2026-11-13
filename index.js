@@ -280,13 +280,16 @@ export function apply(ctx) {
   const token = {}
   const previous = globalThis[INSTANCE_KEY]
   if (previous && previous.token !== token && typeof previous.dispose === 'function') {
-    // A reloaded build leaves the previous instance's timer and task array
-    // behind; take over so two copies can never deliver the same task twice.
-    try {
-      previous.dispose()
-    } catch {
-      // the old instance is already gone
-    }
+    // A reloaded build leaves the previous instance's timer behind; hand it
+    // over so two copies can never deliver the same task twice. Deferred, because
+    // tearing down inside an HMR transaction raises "HMR transactions cannot be nested".
+    setTimeout(() => {
+      try {
+        previous.dispose()
+      } catch {
+        // the old instance is already gone
+      }
+    }, 0)
   }
   let tasks = []
   let loaded = false
@@ -528,7 +531,7 @@ export function apply(ctx) {
     const items = tasks
       .filter((task) => task.done !== true && (sessionId === '' || task.sessionId === sessionId))
       .map((task) => summarize(task, now))
-    sendJson(res, 200, { ok: true, items, total: items.length })
+    sendJson(res, 200, { ok: true, items, total: items.length, promptMode: promptMode() })
   }
 
   async function handleCreate(req, res) {
