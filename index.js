@@ -571,7 +571,163 @@ export function apply(ctx) {
     sendJson(res, 200, { ok: true })
   }
 
+  /**
+   * Model-facing entry point: the agent arms a message to its own Session and
+   * reads it later. This is the whole "check the result again in five minutes"
+   * loop — the send arrives as an ordinary user message, so it wakes the agent
+   * exactly like the user typing it.
+   */
+  function toolZone() {
+    try {
+      return resolveZone(new Intl.DateTimeFormat().resolvedOptions().timeZone)
+    } catch {
+      return ZONE_FALLBACK
+    }
+  }
+
+  function registerSendTool() {
+    const tools = ctx.get('tools')
+    if (!tools || typeof tools.register !== 'function') return () => {}
+    const definition = {
+      name: 'schedule_send',
+      description:
+        '把一段话在之后某个时刻当作「用户自己发的消息」送回当前会话，用来定时唤醒自己：例如先跑一个要等结果的任务，再定 5 分钟后回来检查；或指定今天/某天的几点几分提醒自己；或本轮回答结束后立刻再跑一次。三种方式：after-turn = 这一轮答完就发一次；interval = 每隔 N 分钟发一次、共 count 次；clock = 指定日期时间，可选每天/每周几/每月几号重复。发送时会像用户按回车一样遵循当前会话的排队/插话设置。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['text', 'mode'],
+        properties: {
+          text: {
+            type: 'string',
+            description: '到点发出去的原话，也就是未来你读到的那条用户消息（建议写成给自己的指令，带上要检查什么）',
+          },
+          mode: {
+            type: 'string',
+            enum: ['after-turn', 'interval', 'clock'],
+            description: 'after-turn = 本轮结束后发送；interval = 间隔发送；clock = 定时发送',
+          },
+          minutes: { type: 'integer', minimum: 1, maximum: 9999, description: 'interval：每隔多少分钟发一次' },
+          count: { type: 'integer', minimum: 1, maximum: 999, description: 'interval：一共发几次，默认 1' },
+          date: { type: 'string', description: 'clock：日期 YYYY-MM-DD；repeat=none 时必填，过去的时间会被拒绝' },
+          time: { type: 'string', description: 'clock：时间 HH:mm，必填' },
+          repeat: {
+            type: 'string',
+            enum: ['none', 'daily', 'weekly', 'monthly'],
+            description: 'clock：重复方式，默认 none',
+          },
+          weekdays: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'clock + weekly：星期几，0=周一 … 6=周日',
+          },
+          monthDay: { type: 'integer', minimum: 1, maximum: 31, description: 'clock + monthly：每月几号' },
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['ok', 'id', 'rule', 'scheduledAt', 'waitingTurn'],
+          properties: {
+            ok: { type: 'boolean' },
+            id: { type: 'string' },
+            rule: { type: 'string' },
+            scheduledAt: { type: 'string', description: '下一次发送的 UTC 时间；等轮次发送时为空串' },
+            waitingTurn: { type: 'boolean', description: 'true = 正在等这一轮结束再发' },
+          },
+        },
+        render: (_args, value) => {
+          const record = value && typeof value === 'object' ? value : {}
+          const when = record.scheduledAt ? `，下一次 ${record.scheduledAt}` : ''
+          const rule = typeof record.rule === 'string' ? record.rule : '已排定'
+          return [{ type: 'text', text: `${rule}${when}（任务 ${record.id || '?'}）` }]
+        },
+      },
+      isConcurrencySafe: () => false,
+      async execute(args, exec) {
+        const raw = args && typeof args === 'object' ? args : {}
+        const sessionId = exec && exec.agent && exec.agent.id ? String(exec.agent.id) : ''
+        await load()
+        if (tasks.length >= MAX_TASKS) throw new Error(`待发送任务太多（上限 ${MAX_TASKS} 条）`)
+        const { task } = buildTask({
+          sessionId,
+          zone: toolZone(),
+          mode: raw.mode,
+          prompt: raw.text,
+          minutes: raw.minutes,
+          count: raw.count,
+          date: raw.date,
+          time: raw.time,
+          repeat: raw.repeat,
+          weekdays: raw.weekdays,
+          monthDay: raw.monthDay,
+        })
+        if (task.mode === 'after-turn') {
+          const running = await sessionRunning(task.sessionId)
+          task.nextAt = running === true ? null : Date.now() + 1000
+        }
+        tasks.push(task)
+        await save()
+        const view = summarize(task, Date.now())
+        return {
+          ok: true,
+          id: view.id,
+          rule: view.rule,
+          scheduledAt: typeof view.scheduledAt === 'string' ? view.scheduledAt : '',
+          waitingTurn: view.waitingTurn === true,
+        }
+      },
+    }
+    const cancelDefinition = {
+      name: 'schedule_cancel',
+      description: '取消一条已经排定的定时发送任务（id 用 schedule_send 的返回值，或用列表里看到的 id）。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id'],
+        properties: { id: { type: 'string', description: '任务 id，形如 ss-xxxx-xxxxxx' } },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['ok', 'removed'],
+          properties: { ok: { type: 'boolean' }, removed: { type: 'boolean' } },
+        },
+        render: (_args, value) => [
+          { type: 'text', text: value && value.removed === true ? '已取消这条定时发送' : '没找到这条任务（可能已经发出或删掉了）' },
+        ],
+      },
+      isConcurrencySafe: () => false,
+      async execute(args) {
+        const id = args && typeof args.id === 'string' ? args.id : ''
+        await load()
+        const before = tasks.length
+        tasks = tasks.filter((task) => task.id !== id)
+        const removed = tasks.length !== before
+        if (removed) await save()
+        return { ok: true, removed }
+      },
+    }
+
+    const registered = []
+    for (const item of [definition, cancelDefinition]) {
+      try {
+        registered.push(tools.register(item))
+      } catch (error) {
+        const message = error && error.message ? String(error.message) : String(error)
+        if (!/duplicate|already registered|in use/i.test(message)) throw error
+      }
+    }
+    return () => {
+      for (const dispose of registered) {
+        if (typeof dispose === 'function') dispose()
+      }
+    }
+  }
+
   ctx.effect(() => {
+    disposers.push(registerSendTool())
     disposers.push(mount(`${BASE_PATH}/list`, (req, res) => {
       const url = new URL(req.url || '/', 'http://localhost')
       handleList(req, res, url).catch((error) => {
